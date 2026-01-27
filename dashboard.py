@@ -39,26 +39,30 @@ with st.sidebar:
         st.subheader("1. Critères Sémantiques")
         all_words = st.text_input("Mots-clés", placeholder="ex: Crise Banque")
         exact_phrase = st.text_input("Phrase exacte")
-        hashtags = st.text_input("Hashtags", placeholder="#Finance")
-        lang = st.selectbox("Langue (Priorité)", ["Tout", "fr", "en", "ar"], index=1)
+        
+        # Logique d'affichage selon la source
+        if source == "Twitter (X)":
+            hashtags = st.text_input("Hashtags", placeholder="#Finance")
+            lang = st.selectbox("Langue", ["Tout", "fr", "en", "ar"], index=1)
+            lbl_min = "Min J'aime"
+            lbl_accts = "Depuis ces comptes"
+        else:
+            st.info("YouTube : Analyse des COMMENTAIRES sous les vidéos trouvées.")
+            hashtags = ""
+            lang = st.selectbox("Langue des vidéos", ["Tout", "fr", "en", "ar"], index=1)
+            lbl_min = "Min Likes (Commentaire)"
+            lbl_accts = "Chaîne spécifique (Optionnel)"
 
         st.subheader("2. Filtres Techniques")
         with st.expander("Options Avancées"):
-            # Adaptation des labels selon la source
-            lbl_min = "Min J'aime" if source == "Twitter (X)" else "Min Vues"
-            lbl_accts = "Depuis ces comptes" if source == "Twitter (X)" else "Depuis Chaîne"
-            
             c1, c2 = st.columns(2)
             since_date = c1.date_input("Début", datetime.now() - timedelta(days=30))
             until_date = c2.date_input("Fin", datetime.now())
             
-            min_faves = st.number_input(lbl_min, 0, step=100)
+            min_faves = st.number_input(lbl_min, 0, step=10)
             from_accts = st.text_input(lbl_accts)
 
-            if source == "YouTube":
-                st.caption("Note: Les dates sont approximatives sur YouTube.")
-
-        limit = st.number_input("Nombre de résultats", 10, 2000, 50)
+        limit = st.number_input("Nombre de résultats (Commentaires)", 10, 2000, 50)
         
         submitted = st.form_submit_button(f"Lancer l'Extraction {source}")
 
@@ -79,7 +83,6 @@ with st.sidebar:
         with st.status("Initialisation...", expanded=True) as status:
             final_data = []
             
-            # Appel du générateur
             for progress in client.fetch_data_generator(params, limit):
                 
                 if "error" in progress:
@@ -90,7 +93,9 @@ with st.sidebar:
                 curr = progress['current_count']
                 tgt = progress['target']
                 
-                status.update(label=f"Traitement en cours ({curr}/{tgt}) - Veuillez patienter...", state="running")
+                # Message adapté
+                type_msg = "Tweets" if source == "Twitter (X)" else "Commentaires"
+                status.update(label=f"Récupération de {curr}/{tgt} {type_msg}...", state="running")
                 
                 final_data = progress['data']
                 
@@ -104,7 +109,7 @@ with st.sidebar:
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.warning("Aucune donnée trouvée. Essayez de réduire les filtres.")
+                st.warning("Aucune donnée trouvée.")
 
 # --- CHARGEMENT ET TRAITEMENT ---
 
@@ -164,7 +169,9 @@ if not df_raw.empty:
 
     k1, k2, k3 = st.columns(3)
     k1.metric("Volume Affiché", len(df))
-    eng_label = "Vues Totales" if source_used == "YouTube" else "Engagement Total"
+    
+    # Label dynamique
+    eng_label = "Total Likes (Comms)" if "YouTube" in source_used else "Engagement Total"
     k2.metric(eng_label, int(df['engagement'].sum()))
     
     if 'sentiment_cat' in df.columns:
@@ -181,20 +188,6 @@ if not df_raw.empty:
             st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
 
         st.divider()
-        st.subheader("Solde Net de Sentiment")
-        if 'date' in df.columns and not df.empty:
-            df_polar = df[df['sentiment_cat'] != 'Neutre'].copy()
-            if not df_polar.empty:
-                df_agg = df_polar.groupby([pd.Grouper(key='date', freq='4H'), 'sentiment_cat']).size().unstack(fill_value=0)
-                if 'Positif' not in df_agg.columns: df_agg['Positif'] = 0
-                if 'Négatif' not in df_agg.columns: df_agg['Négatif'] = 0
-                df_agg['net_score'] = df_agg['Positif'] - df_agg['Négatif']
-                df_agg['color_label'] = df_agg['net_score'].apply(lambda x: 'Positif' if x >= 0 else 'Négatif')
-                fig_bar = px.bar(df_agg.reset_index(), x="date", y="net_score", color="color_label", color_discrete_map=COLOR_MAP)
-                fig_bar.add_hline(y=0, line_color="white", opacity=0.8)
-                fig_bar.update_layout(showlegend=False)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
         st.subheader("Détail du Flux")
         st.dataframe(df[['date', 'handle', 'text', 'engagement', 'sentiment_cat']], use_container_width=True)
 else:

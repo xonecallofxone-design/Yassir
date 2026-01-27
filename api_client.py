@@ -2,7 +2,7 @@ import requests
 import time
 from datetime import datetime
 from typing import Dict, Any, Generator
-from youtubesearchpython import VideosSearch
+from youtubesearchpython import VideosSearch, Comments
 
 # --- CONFIGURATION API TWITTER ---
 API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
@@ -25,7 +25,6 @@ class TwitterAPIClient:
         headers = {"X-API-Key": API_KEY}
         all_tweets = []
         next_cursor = None
-        start_time = time.time()
         
         while len(all_tweets) < limit:
             payload = {"query": query_string, "limit": 20}
@@ -85,90 +84,99 @@ class TwitterAPIClient:
 
 class YoutubeAPIClient:
     def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        # Construction intelligente de la requête pour YouTube
+        # 1. Préparation de la recherche de VIDEOS d'abord
         search_terms = []
         if params.get('all_words'): search_terms.append(params['all_words'])
         if params.get('exact_phrase'): search_terms.append(f'"{params["exact_phrase"]}"')
         if params.get('hashtags'): search_terms.append(params['hashtags'])
         
-        # Hack pour la langue
         lang_map = {'fr': 'français', 'en': 'english', 'ar': 'arabic'}
         if params.get('lang') and params['lang'] != 'Tout':
             search_terms.append(lang_map.get(params['lang'], params['lang']))
 
         final_query = " ".join(search_terms)
-        if not final_query.strip():
-            final_query = "news" # Fallback si vide
+        if not final_query.strip(): final_query = "news"
         
-        min_views_needed = int(params.get('min_faves', 0))
-
-        # Initialisation de la recherche
+        # On cherche d'abord les vidéos (max 20 pour ne pas saturer, on veut surtout les coms)
         try:
-            videos_search = VideosSearch(final_query, limit=limit)
+            videos_search = VideosSearch(final_query, limit=15)
+            videos_result = videos_search.result()
         except Exception as e:
-            yield {"error": f"Erreur Init YouTube: {str(e)}"}
+            yield {"error": f"Erreur Recherche Vidéo: {str(e)}"}
             return
 
-        all_videos = []
+        all_comments = []
         
-        try:
-            results = videos_search.result()
+        if not videos_result or 'result' not in videos_result:
+            yield {"current_count": 0, "target": limit, "data": [], "finished": True}
+            return
+
+        # 2. Boucle sur chaque vidéo pour extraire les COMMENTAIRES
+        for video in videos_result['result']:
+            if len(all_comments) >= limit: break
             
-            while len(all_videos) < limit:
-                if not results or 'result' not in results: break
-                    
-                batch = results['result']
-                if not batch: break
+            video_id = video.get('id')
+            video_title = video.get('title', 'Vidéo sans titre')
+            
+            try:
+                # Récupération des commentaires de cette vidéo
+                comments_fetcher = Comments(video_id)
+                
+                # On regarde s'il y a des commentaires
+                if comments_fetcher.comments and 'result' in comments_fetcher.comments:
+                    for comm in comments_fetcher.comments['result']:
+                        if len(all_comments) >= limit: break
+                        
+                        # Extraction des données du commentaire
+                        content = comm.get('content', '')
+                        author = comm.get('author', {}).get('name', 'Anonyme')
+                        likes_str = comm.get('votes', {}).get('simpleText', '0')
+                        
+                        # Nettoyage des likes (ex: "1.2K" -> 1200)
+                        likes = 0
+                        if 'K' in likes_str:
+                            likes = int(float(likes_str.replace('K', '')) * 1000)
+                        elif 'M' in likes_str:
+                            likes = int(float(likes_str.replace('M', '')) * 1000000)
+                        else:
+                            likes = int(''.join(filter(str.isdigit, likes_str)) or 0)
 
-                for v in batch:
-                    if len(all_videos) >= limit: break
-                    
-                    # Nettoyage Vues
-                    view_text = v.get('viewCount', {'text': '0'})
-                    if isinstance(view_text, dict): view_text = view_text.get('text', '0')
-                    # Extraction des chiffres uniquement
-                    views_str = ''.join(filter(str.isdigit, str(view_text)))
-                    views = int(views_str) if views_str else 0
+                        # Note: YouTube API ne donne pas la date exacte facile (ex: "2 weeks ago").
+                        # Pour que le graph fonctionne, on met la date actuelle.
+                        # On ajoute la "vraie" date relative dans le texte pour info.
+                        date_relative = comm.get('publishedTime', '')
+                        full_text = f"{content} (Date: {date_relative}) [Source: {video_title}]"
 
-                    # FILTRE TECHNIQUE : Si vues < min demandé, on ignore
-                    if views < min_views_needed:
-                        continue
-
-                    all_videos.append({
-                        "id": v.get('id'),
-                        "date_iso": datetime.utcnow().isoformat() + "Z",
-                        "text": f"{v.get('title', '')} \n {v.get('descriptionSnippet', '')}",
-                        "handle": v.get('channel', {}).get('name', 'Inconnu'),
-                        "url": v.get('link', ''),
-                        "source_type": "YouTube",
-                        "metrics": {
-                            "likes": views,
-                            "retweets": 0,
-                            "replies": 0
-                        }
-                    })
-
+                        all_comments.append({
+                            "id": comm.get('id'),
+                            "date_iso": datetime.utcnow().isoformat() + "Z", # Date technique pour le tri
+                            "text": full_text,
+                            "handle": author,
+                            "url": video.get('link', ''),
+                            "source_type": "YouTube Comments",
+                            "metrics": {
+                                "likes": likes,
+                                "retweets": 0, # Pas de retweet sur YT
+                                "replies": 0
+                            }
+                        })
+                
+                # Feedback à l'interface pendant qu'on cherche
                 yield {
-                    "current_count": len(all_videos),
+                    "current_count": len(all_comments),
                     "target": limit,
-                    "data": all_videos,
+                    "data": all_comments,
                     "finished": False
                 }
-                
-                if len(all_videos) >= limit: break
-                
-                try:
-                    videos_search.next()
-                    results = videos_search.result()
-                    time.sleep(1) 
-                except: break
+                time.sleep(0.5) # Petite pause pour pas se faire bloquer
 
-        except Exception as e:
-            yield {"error": f"Erreur YouTube: {str(e)}"}
+            except Exception as e:
+                # Si une vidéo a les coms désactivés, on passe à la suivante
+                continue
 
         yield {
-            "current_count": len(all_videos),
+            "current_count": len(all_comments),
             "target": limit,
-            "data": all_videos,
+            "data": all_comments,
             "finished": True
         }
