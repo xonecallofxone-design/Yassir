@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, Any, Generator
 from youtubesearchpython import VideosSearch, Comments
 
+# --- CONFIGURATION API TWITTER ---
 API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
 API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
@@ -83,91 +84,90 @@ class TwitterAPIClient:
 
 class YoutubeAPIClient:
     def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        # --- PHASE 1 : Trouver les vidéos pertinentes (Sujet du Bad Buzz) ---
+        # 1. Construction de la requête pour trouver les VIDEOS
         search_terms = []
         if params.get('all_words'): search_terms.append(params['all_words'])
         if params.get('exact_phrase'): search_terms.append(f'"{params["exact_phrase"]}"')
         if params.get('hashtags'): search_terms.append(params['hashtags'])
         
-        # Astuce Langue: Ajouter le nom de la langue dans la recherche
         lang_map = {'fr': 'français', 'en': 'english', 'ar': 'arabic'}
         if params.get('lang') and params['lang'] != 'Tout':
             search_terms.append(lang_map.get(params['lang'], params['lang']))
 
         final_query = " ".join(search_terms)
-        if not final_query.strip(): final_query = "news"
+        # Fallback pour éviter search vide
+        if not final_query.strip(): final_query = "Maroc" 
+
+        min_likes_needed = int(params.get('min_faves', 0))
+        all_comments = []
 
         try:
-            # On récupère d'abord une liste de vidéos (max 15 pour être rapide)
+            # On cherche d'abord les 15 vidéos les plus pertinentes
             videos_search = VideosSearch(final_query, limit=15)
             videos_result = videos_search.result()
         except Exception as e:
-            yield {"error": f"Erreur Recherche Vidéo: {str(e)}"}
+            yield {"error": f"Erreur Init YouTube: {str(e)}"}
             return
-
-        all_comments = []
-        min_likes_needed = int(params.get('min_faves', 0))
 
         if not videos_result or 'result' not in videos_result:
             yield {"current_count": 0, "target": limit, "data": [], "finished": True}
             return
 
-        # --- PHASE 2 : Extraire les commentaires de CHAQUE vidéo ---
+        # 2. On boucle sur chaque vidéo pour récupérer les COMMENTAIRES
         for video in videos_result['result']:
             if len(all_comments) >= limit: break
             
             video_id = video.get('id')
             video_title = video.get('title', 'Titre Inconnu')
-            
+            video_link = video.get('link', '')
+
             try:
-                # Utilisation de la classe Comments() selon la doc
+                # Appel API pour les commentaires de CETTE vidéo
                 comments_fetcher = Comments(video_id)
                 
-                # Vérification s'il y a des résultats
+                # Vérification de sécurité (si commentaires désactivés ou pas de résultat)
                 if comments_fetcher.comments and 'result' in comments_fetcher.comments:
                     
                     for comm in comments_fetcher.comments['result']:
                         if len(all_comments) >= limit: break
                         
-                        # Extraction sécurisée des données
+                        # Extraction robuste
                         content = comm.get('content', '')
                         author = comm.get('author', {}).get('name', 'Anonyme')
                         votes = comm.get('votes', {}).get('simpleText', '0')
-                        published_time = comm.get('publishedTime', 'Récemment')
+                        published = comm.get('publishedTime', '')
 
-                        # Conversion Likes (1.2K -> 1200)
+                        # Conversion des "K" et "M" en chiffres
                         likes = 0
                         if 'K' in votes:
                             likes = int(float(votes.replace('K', '')) * 1000)
                         elif 'M' in votes:
                             likes = int(float(votes.replace('M', '')) * 1000000)
                         else:
-                            # Garder seulement les chiffres
                             digits = ''.join(filter(str.isdigit, votes))
                             likes = int(digits) if digits else 0
 
-                        # Filtre Technique (Min Likes sur le commentaire)
+                        # Filtre Min Likes
                         if likes < min_likes_needed:
                             continue
 
-                        # Construction de l'objet final
+                        # Construction de l'objet de données
                         all_comments.append({
                             "id": comm.get('id'),
-                            "date_iso": datetime.utcnow().isoformat() + "Z", # Date technique pour le tri
-                            "text": f"{content}", # Le contenu pur du commentaire
+                            "date_iso": datetime.utcnow().isoformat() + "Z", # Date technique
+                            "text": content,
                             "handle": author,
-                            "url": f"https://www.youtube.com/watch?v={video_id}", # Lien vers la vidéo source
+                            "url": video_link,
                             "source_type": "YouTube Comments",
                             "metrics": {
                                 "likes": likes,
                                 "retweets": 0,
-                                "replies": 0 
+                                "replies": 0
                             },
-                            # Métadonnée utile pour comprendre le contexte
-                            "context": f"Sur la vidéo: {video_title} ({published_time})"
+                            "context": f"Source: {video_title} ({published})" # Important pour savoir d'où ça vient
                         })
 
-                # Mise à jour de l'interface utilisateur
+                # Mise à jour progressive
                 yield {
                     "current_count": len(all_comments),
                     "target": limit,
@@ -175,13 +175,13 @@ class YoutubeAPIClient:
                     "finished": False
                 }
                 
-                # Petite pause pour éviter le blocage IP (Scraping etiquette)
-                time.sleep(0.5)
+                time.sleep(0.5) # Pause pour éviter le blocage
 
             except Exception as e:
-                # Si les commentaires sont désactivés sur une vidéo, on passe à la suivante
+                # Erreur sur une vidéo spécifique (pas grave, on continue)
                 continue
 
+        # Envoi final
         yield {
             "current_count": len(all_comments),
             "target": limit,

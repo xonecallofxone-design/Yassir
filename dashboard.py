@@ -16,12 +16,12 @@ from api_client import TwitterAPIClient, YoutubeAPIClient
 
 nest_asyncio.apply()
 
-st.set_page_config(page_title="Système d'Analyse Avancé", layout="wide")
+st.set_page_config(page_title="Système d'Analyse Bad Buzz", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #1DA1F2; color: white; border: none; font-weight: bold; }
-    .stButton>button:hover { background-color: #0d8ddb; color: white; }
+    .stButton>button { width: 100%; background-color: #C2185B; color: white; border: none; font-weight: bold; }
+    .stButton>button:hover { background-color: #880E4F; color: white; }
     .metric-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
@@ -30,28 +30,28 @@ COLOR_MAP = {'Positif': '#00CC96', 'Négatif': '#EF553B', 'Neutre': '#7f7f7f'}
 
 # --- BARRE LATERALE ---
 with st.sidebar:
-    st.header("Configuration de Recherche")
+    st.header("Paramètres de Scan")
     
-    source = st.radio("Source de données", ["Twitter (X)", "YouTube"], index=0)
+    source = st.radio("Cible", ["Twitter (X)", "YouTube"], index=0)
     st.divider()
 
     with st.form("api_form"):
-        st.subheader("1. Critères Sémantiques")
-        all_words = st.text_input("Mots-clés", placeholder="ex: Crise, Arnaque")
+        st.subheader("1. Mots-clés (Sujet)")
+        all_words = st.text_input("Mots-clés Principaux", placeholder="ex: Boycott, Scandale")
         exact_phrase = st.text_input("Phrase exacte")
         
-        # Hashtags visible pour tout le monde
+        # Hashtags dispo pour les deux
         hashtags = st.text_input("Hashtags", placeholder="#Maroc #Danger")
         
-        lang = st.selectbox("Langue (Priorité)", ["Tout", "fr", "en", "ar"], index=1)
+        lang = st.selectbox("Langue", ["Tout", "fr", "en", "ar"], index=1)
 
         st.subheader("2. Filtres Techniques")
         with st.expander("Options Avancées"):
             if source == "Twitter (X)":
-                lbl_min = "Min J'aime (Tweet)"
-                lbl_accts = "Depuis ces comptes"
+                lbl_min = "Min Likes (Tweet)"
+                lbl_accts = "Comptes Ciblés"
             else:
-                lbl_min = "Min J'aime (Commentaire)"
+                lbl_min = "Min Likes (Commentaire)"
                 lbl_accts = "Chaîne Spécifique (Optionnel)"
             
             c1, c2 = st.columns(2)
@@ -63,7 +63,7 @@ with st.sidebar:
 
         limit = st.number_input("Volume à analyser", 10, 2000, 50)
         
-        submitted = st.form_submit_button(f"Lancer l'Extraction {source}")
+        submitted = st.form_submit_button(f"Lancer l'Analyse {source}")
 
     if submitted:
         if source == "Twitter (X)":
@@ -79,13 +79,13 @@ with st.sidebar:
             "until": until_date.strftime("%Y-%m-%d")
         }
 
-        with st.status("Démarrage du Scan...", expanded=True) as status:
+        with st.status("Traitement en cours...", expanded=True) as status:
             final_data = []
             
             for progress in client.fetch_data_generator(params, limit):
                 
                 if "error" in progress:
-                    status.update(label="Erreur survenue", state="error")
+                    status.update(label="Erreur détectée", state="error")
                     st.error(progress["error"])
                     break
                 
@@ -93,7 +93,7 @@ with st.sidebar:
                 tgt = progress['target']
                 
                 msg_type = "Tweets" if source == "Twitter (X)" else "Commentaires"
-                status.update(label=f"Collecte des {msg_type}: {curr} / {tgt}...", state="running")
+                status.update(label=f"Collecte des {msg_type}: {curr}/{tgt}...", state="running")
                 
                 final_data = progress['data']
                 
@@ -101,15 +101,15 @@ with st.sidebar:
                     status.update(label="Analyse Terminée !", state="complete", expanded=False)
 
             if final_data:
-                st.success(f"Analyse réussie : {len(final_data)} réactions récupérées.")
+                st.success(f"Terminé : {len(final_data)} réactions collectées.")
                 with open("api_data.json", "w", encoding="utf-8") as f:
                     json.dump(final_data, f, ensure_ascii=False)
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.warning("Aucune donnée trouvée. Essayez d'élargir la recherche.")
+                st.warning("Aucune donnée trouvée. Vérifiez vos mots-clés.")
 
-# --- TRAITEMENT DES DONNEES ---
+# --- CHARGEMENT ET TRAITEMENT ---
 
 @st.cache_data
 def load_and_process_data():
@@ -147,13 +147,13 @@ st.title("War Room : Détection de Bad Buzz")
 
 if not df_raw.empty:
     source_used = df_raw['source_type'].iloc[0] if 'source_type' in df_raw.columns else "Inconnu"
-    st.caption(f"Source : **{source_used}**")
+    st.caption(f"Source des données : **{source_used}**")
 
-    st.markdown("### Filtres d'Affichage")
+    # Filtres interactifs
     col_filter, _ = st.columns([1, 2])
     with col_filter:
         selected_sentiments = st.multiselect(
-            "Filtrer par tonalité :",
+            "Filtrer par sentiment :",
             options=["Positif", "Négatif", "Neutre"],
             default=["Positif", "Négatif", "Neutre"]
         )
@@ -165,16 +165,17 @@ if not df_raw.empty:
 
     st.divider()
 
-    # KPIs
+    # Section KPIs
     k1, k2, k3 = st.columns(3)
     k1.metric("Volume Analysé", len(df))
     
-    eng_text = "Total Likes"
+    # Label dynamique
+    eng_text = "Somme des Likes"
     k2.metric(eng_text, int(df['engagement'].sum()))
     
     if 'sentiment_cat' in df.columns:
         neg_count = len(df[df['sentiment_cat'] == 'Négatif'])
-        k3.metric("Messages Négatifs (Alert)", neg_count, delta_color="inverse")
+        k3.metric("Réactions Négatives", neg_count, delta_color="inverse")
 
         c1, c2 = st.columns([1, 2])
         with c1:
@@ -186,13 +187,13 @@ if not df_raw.empty:
             st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
 
         st.divider()
-        st.subheader("Flux des Réactions")
+        st.subheader("Flux des Messages (Raw Feed)")
         
-        # Choix des colonnes à afficher
-        cols_to_show = ['date', 'handle', 'text', 'engagement', 'sentiment_cat']
+        # Colonnes intelligentes
+        display_cols = ['date', 'handle', 'text', 'engagement', 'sentiment_cat']
         if 'context' in df.columns:
-            cols_to_show.append('context')
+            display_cols.append('context')
             
-        st.dataframe(df[cols_to_show], use_container_width=True)
+        st.dataframe(df[display_cols], use_container_width=True)
 else:
-    st.info("Utilisez le panneau de gauche pour lancer une analyse.")
+    st.info("Utilisez le menu à gauche pour configurer et lancer l'analyse.")
