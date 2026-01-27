@@ -1,190 +1,199 @@
-import requests
-import time
-from datetime import datetime
-from typing import Dict, Any, Generator
-from youtubesearchpython import VideosSearch, Comments
+import sys
+import asyncio
 
-# --- CONFIGURATION API TWITTER ---
-API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
-API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-class TwitterAPIClient:
-    def build_query(self, p: Dict[str, Any]) -> str:
-        parts = []
-        if p.get('all_words'): parts.append(p['all_words'])
-        if p.get('exact_phrase'): parts.append(f'"{p["exact_phrase"]}"')
-        if p.get('hashtags'): parts.append(p['hashtags'])
-        if p.get('lang') and p['lang'] != "Tout": parts.append(f"lang:{p['lang']}")
-        if p.get('from_accounts'): parts.append(f"from:{p['from_accounts'].replace('@', '')}")
-        if p.get('since'): parts.append(f"since:{p['since']}")
-        if p.get('until'): parts.append(f"until:{p['until']}")
-        return " ".join(parts)
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import json
+import os
+import nest_asyncio
+from textblob import TextBlob 
+from datetime import datetime, timedelta
+from api_client import TwitterAPIClient, YoutubeAPIClient
 
-    def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        query_string = self.build_query(params)
-        headers = {"X-API-Key": API_KEY}
-        all_tweets = []
-        next_cursor = None
+nest_asyncio.apply()
+
+st.set_page_config(page_title="Système d'Analyse Bad Buzz", layout="wide")
+
+st.markdown("""
+<style>
+    .stButton>button { width: 100%; background-color: #C2185B; color: white; border: none; font-weight: bold; }
+    .stButton>button:hover { background-color: #880E4F; color: white; }
+    .metric-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; }
+</style>
+""", unsafe_allow_html=True)
+
+COLOR_MAP = {'Positif': '#00CC96', 'Négatif': '#EF553B', 'Neutre': '#7f7f7f'}
+
+# --- BARRE LATERALE ---
+with st.sidebar:
+    st.header("Paramètres de Scan")
+    
+    source = st.radio("Cible", ["Twitter (X)", "YouTube"], index=0)
+    st.divider()
+
+    with st.form("api_form"):
+        st.subheader("1. Mots-clés (Sujet)")
+        all_words = st.text_input("Mots-clés Principaux", placeholder="ex: Boycott, Scandale")
+        exact_phrase = st.text_input("Phrase exacte")
         
-        while len(all_tweets) < limit:
-            payload = {"query": query_string, "limit": 20}
-            if next_cursor: payload["cursor"] = next_cursor
-
-            try:
-                response = requests.get(API_URL, params=payload, headers=headers)
-                if response.status_code == 429:
-                    time.sleep(10)
-                    continue 
-                if response.status_code != 200:
-                    yield {"error": f"Erreur API: {response.status_code}"}
-                    break
-
-                data = response.json()
-                batch = data.get('tweets', [])
-                if not batch: break 
-
-                for t in batch:
-                    if any(existing['id'] == t.get('id') for existing in all_tweets): continue
-                    author = t.get('author') or {}
-                    all_tweets.append({
-                        "id": t.get('id'),
-                        "date_iso": t.get('createdAt'),
-                        "text": t.get('text', ""),
-                        "handle": author.get('userName', 'Inconnu'),
-                        "url": t.get('url') or t.get('twitterUrl', ""),
-                        "source_type": "Twitter",
-                        "metrics": {
-                            "likes": t.get('likeCount', 0),
-                            "retweets": t.get('retweetCount', 0),
-                            "replies": t.get('replyCount', 0)
-                        }
-                    })
-
-                yield {
-                    "current_count": len(all_tweets),
-                    "target": limit,
-                    "data": all_tweets,
-                    "finished": False
-                }
-
-                next_cursor = data.get('next_cursor')
-                if not next_cursor or not data.get('has_next_page'): break
-                time.sleep(6)
-
-            except Exception as e:
-                yield {"error": str(e)}
-                break
-
-        yield {
-            "current_count": len(all_tweets),
-            "target": limit,
-            "data": all_tweets[:limit],
-            "finished": True
-        }
-
-class YoutubeAPIClient:
-    def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        # 1. Construction de la requête pour trouver les VIDEOS
-        search_terms = []
-        if params.get('all_words'): search_terms.append(params['all_words'])
-        if params.get('exact_phrase'): search_terms.append(f'"{params["exact_phrase"]}"')
-        if params.get('hashtags'): search_terms.append(params['hashtags'])
+        # Hashtags dispo pour les deux
+        hashtags = st.text_input("Hashtags", placeholder="#Maroc #Danger")
         
-        lang_map = {'fr': 'français', 'en': 'english', 'ar': 'arabic'}
-        if params.get('lang') and params['lang'] != 'Tout':
-            search_terms.append(lang_map.get(params['lang'], params['lang']))
+        lang = st.selectbox("Langue", ["Tout", "fr", "en", "ar"], index=1)
 
-        final_query = " ".join(search_terms)
-        # Fallback pour éviter search vide
-        if not final_query.strip(): final_query = "Maroc" 
-
-        min_likes_needed = int(params.get('min_faves', 0))
-        all_comments = []
-
-        try:
-            # On cherche d'abord les 15 vidéos les plus pertinentes
-            videos_search = VideosSearch(final_query, limit=15)
-            videos_result = videos_search.result()
-        except Exception as e:
-            yield {"error": f"Erreur Init YouTube: {str(e)}"}
-            return
-
-        if not videos_result or 'result' not in videos_result:
-            yield {"current_count": 0, "target": limit, "data": [], "finished": True}
-            return
-
-        # 2. On boucle sur chaque vidéo pour récupérer les COMMENTAIRES
-        for video in videos_result['result']:
-            if len(all_comments) >= limit: break
+        st.subheader("2. Filtres Techniques")
+        with st.expander("Options Avancées"):
+            if source == "Twitter (X)":
+                lbl_min = "Min Likes (Tweet)"
+                lbl_accts = "Comptes Ciblés"
+            else:
+                lbl_min = "Min Likes (Commentaire)"
+                lbl_accts = "Chaîne Spécifique (Optionnel)"
             
-            video_id = video.get('id')
-            video_title = video.get('title', 'Titre Inconnu')
-            video_link = video.get('link', '')
+            c1, c2 = st.columns(2)
+            since_date = c1.date_input("Début", datetime.now() - timedelta(days=30))
+            until_date = c2.date_input("Fin", datetime.now())
+            
+            min_faves = st.number_input(lbl_min, 0, step=10)
+            from_accts = st.text_input(lbl_accts)
 
-            try:
-                # Appel API pour les commentaires de CETTE vidéo
-                comments_fetcher = Comments(video_id)
-                
-                # Vérification de sécurité (si commentaires désactivés ou pas de résultat)
-                if comments_fetcher.comments and 'result' in comments_fetcher.comments:
-                    
-                    for comm in comments_fetcher.comments['result']:
-                        if len(all_comments) >= limit: break
-                        
-                        # Extraction robuste
-                        content = comm.get('content', '')
-                        author = comm.get('author', {}).get('name', 'Anonyme')
-                        votes = comm.get('votes', {}).get('simpleText', '0')
-                        published = comm.get('publishedTime', '')
+        limit = st.number_input("Volume à analyser", 10, 2000, 50)
+        
+        submitted = st.form_submit_button(f"Lancer l'Analyse {source}")
 
-                        # Conversion des "K" et "M" en chiffres
-                        likes = 0
-                        if 'K' in votes:
-                            likes = int(float(votes.replace('K', '')) * 1000)
-                        elif 'M' in votes:
-                            likes = int(float(votes.replace('M', '')) * 1000000)
-                        else:
-                            digits = ''.join(filter(str.isdigit, votes))
-                            likes = int(digits) if digits else 0
-
-                        # Filtre Min Likes
-                        if likes < min_likes_needed:
-                            continue
-
-                        # Construction de l'objet de données
-                        all_comments.append({
-                            "id": comm.get('id'),
-                            "date_iso": datetime.utcnow().isoformat() + "Z", # Date technique
-                            "text": content,
-                            "handle": author,
-                            "url": video_link,
-                            "source_type": "YouTube Comments",
-                            "metrics": {
-                                "likes": likes,
-                                "retweets": 0,
-                                "replies": 0
-                            },
-                            "context": f"Source: {video_title} ({published})" # Important pour savoir d'où ça vient
-                        })
-
-                # Mise à jour progressive
-                yield {
-                    "current_count": len(all_comments),
-                    "target": limit,
-                    "data": all_comments,
-                    "finished": False
-                }
-                
-                time.sleep(0.5) # Pause pour éviter le blocage
-
-            except Exception as e:
-                # Erreur sur une vidéo spécifique (pas grave, on continue)
-                continue
-
-        # Envoi final
-        yield {
-            "current_count": len(all_comments),
-            "target": limit,
-            "data": all_comments,
-            "finished": True
+    if submitted:
+        if source == "Twitter (X)":
+            client = TwitterAPIClient()
+        else:
+            client = YoutubeAPIClient()
+            
+        params = {
+            "all_words": all_words, "exact_phrase": exact_phrase,
+            "hashtags": hashtags, "lang": lang,
+            "min_faves": min_faves, "from_accounts": from_accts,
+            "since": since_date.strftime("%Y-%m-%d"),
+            "until": until_date.strftime("%Y-%m-%d")
         }
+
+        with st.status("Traitement en cours...", expanded=True) as status:
+            final_data = []
+            
+            for progress in client.fetch_data_generator(params, limit):
+                
+                if "error" in progress:
+                    status.update(label="Erreur détectée", state="error")
+                    st.error(progress["error"])
+                    break
+                
+                curr = progress['current_count']
+                tgt = progress['target']
+                
+                msg_type = "Tweets" if source == "Twitter (X)" else "Commentaires"
+                status.update(label=f"Collecte des {msg_type}: {curr}/{tgt}...", state="running")
+                
+                final_data = progress['data']
+                
+                if progress.get('finished'):
+                    status.update(label="Analyse Terminée !", state="complete", expanded=False)
+
+            if final_data:
+                st.success(f"Terminé : {len(final_data)} réactions collectées.")
+                with open("api_data.json", "w", encoding="utf-8") as f:
+                    json.dump(final_data, f, ensure_ascii=False)
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("Aucune donnée trouvée. Vérifiez vos mots-clés.")
+
+# --- CHARGEMENT ET TRAITEMENT ---
+
+@st.cache_data
+def load_and_process_data():
+    if not os.path.exists("api_data.json"): return pd.DataFrame()
+    try:
+        with open("api_data.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except: return pd.DataFrame()
+            
+    if not data: return pd.DataFrame()
+    
+    df = pd.json_normalize(data)
+    df['date'] = pd.to_datetime(df['date_iso'], errors='coerce')
+    
+    for col in ['metrics.likes', 'metrics.retweets', 'metrics.replies']:
+        if col not in df.columns: df[col] = 0
+
+    df['engagement'] = df['metrics.likes'] + df['metrics.retweets']
+
+    def get_sentiment(text):
+        if not isinstance(text, str): return 0.0, 'Neutre'
+        s = TextBlob(text).sentiment.polarity
+        if s > 0.1: return s, 'Positif'
+        elif s < -0.1: return s, 'Négatif'
+        else: return s, 'Neutre'
+    
+    if 'text' in df.columns:
+        df[['sentiment_score', 'sentiment_cat']] = df['text'].apply(lambda x: pd.Series(get_sentiment(x)))
+    
+    return df
+
+df_raw = load_and_process_data()
+
+st.title("War Room : Détection de Bad Buzz")
+
+if not df_raw.empty:
+    source_used = df_raw['source_type'].iloc[0] if 'source_type' in df_raw.columns else "Inconnu"
+    st.caption(f"Source des données : **{source_used}**")
+
+    # Filtres interactifs
+    col_filter, _ = st.columns([1, 2])
+    with col_filter:
+        selected_sentiments = st.multiselect(
+            "Filtrer par sentiment :",
+            options=["Positif", "Négatif", "Neutre"],
+            default=["Positif", "Négatif", "Neutre"]
+        )
+    
+    if 'sentiment_cat' in df_raw.columns:
+        df = df_raw[df_raw['sentiment_cat'].isin(selected_sentiments)]
+    else:
+        df = df_raw
+
+    st.divider()
+
+    # Section KPIs
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Volume Analysé", len(df))
+    
+    # Label dynamique
+    eng_text = "Somme des Likes"
+    k2.metric(eng_text, int(df['engagement'].sum()))
+    
+    if 'sentiment_cat' in df.columns:
+        neg_count = len(df[df['sentiment_cat'] == 'Négatif'])
+        k3.metric("Réactions Négatives", neg_count, delta_color="inverse")
+
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.subheader("Répartition des Avis")
+            st.plotly_chart(px.pie(df, names='sentiment_cat', color='sentiment_cat', color_discrete_map=COLOR_MAP), use_container_width=True)
+
+        with c2:
+            st.subheader("Impact vs Sentiment")
+            st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
+
+        st.divider()
+        st.subheader("Flux des Messages (Raw Feed)")
+        
+        # Colonnes intelligentes
+        display_cols = ['date', 'handle', 'text', 'engagement', 'sentiment_cat']
+        if 'context' in df.columns:
+            display_cols.append('context')
+            
+        st.dataframe(df[display_cols], use_container_width=True)
+else:
+    st.info("Utilisez le menu à gauche pour configurer et lancer l'analyse.")
