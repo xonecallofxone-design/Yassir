@@ -4,14 +4,11 @@ from datetime import datetime
 from typing import Dict, Any, Generator
 from youtubesearchpython import VideosSearch
 
-# --- CONFIGURATION ET AUTHENTIFICATION ---
+# --- CONFIGURATION API TWITTER ---
 API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
 API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
 class TwitterAPIClient:
-    """
-    Client Twitter original (inchangé).
-    """
     def build_query(self, p: Dict[str, Any]) -> str:
         parts = []
         if p.get('all_words'): parts.append(p['all_words'])
@@ -64,7 +61,6 @@ class TwitterAPIClient:
                         }
                     })
 
-                duration = time.time() - start_time
                 yield {
                     "current_count": len(all_tweets),
                     "target": limit,
@@ -88,56 +84,70 @@ class TwitterAPIClient:
         }
 
 class YoutubeAPIClient:
-    """
-    Nouveau Client pour YouTube.
-    Scrape les résultats de recherche et les formate comme des tweets
-    pour que le dashboard fonctionne sans modification.
-    """
     def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        search_query = params.get('all_words', '')
-        if params.get('exact_phrase'):
-            search_query += f' "{params.get("exact_phrase")}"'
-            
-        videos_search = VideosSearch(search_query, limit=limit)
+        # Construction intelligente de la requête pour YouTube
+        search_terms = []
+        if params.get('all_words'): search_terms.append(params['all_words'])
+        if params.get('exact_phrase'): search_terms.append(f'"{params["exact_phrase"]}"')
+        if params.get('hashtags'): search_terms.append(params['hashtags'])
+        
+        # Hack pour la langue
+        lang_map = {'fr': 'français', 'en': 'english', 'ar': 'arabic'}
+        if params.get('lang') and params['lang'] != 'Tout':
+            search_terms.append(lang_map.get(params['lang'], params['lang']))
+
+        final_query = " ".join(search_terms)
+        if not final_query.strip():
+            final_query = "news" # Fallback si vide
+        
+        min_views_needed = int(params.get('min_faves', 0))
+
+        # Initialisation de la recherche
+        try:
+            videos_search = VideosSearch(final_query, limit=limit)
+        except Exception as e:
+            yield {"error": f"Erreur Init YouTube: {str(e)}"}
+            return
+
         all_videos = []
-        start_time = time.time()
         
         try:
-            # Récupération en une fois ou par lots (la lib gère la pagination interne, mais on simplifie ici)
             results = videos_search.result()
             
             while len(all_videos) < limit:
-                if not results or 'result' not in results:
-                    break
+                if not results or 'result' not in results: break
                     
                 batch = results['result']
-                
+                if not batch: break
+
                 for v in batch:
                     if len(all_videos) >= limit: break
                     
-                    # Normalisation des vues (ex: "1.2M views" -> nombre approximatif ou 0)
+                    # Nettoyage Vues
                     view_text = v.get('viewCount', {'text': '0'})
                     if isinstance(view_text, dict): view_text = view_text.get('text', '0')
-                    views = ''.join(filter(str.isdigit, view_text))
-                    views = int(views) if views else 0
+                    # Extraction des chiffres uniquement
+                    views_str = ''.join(filter(str.isdigit, str(view_text)))
+                    views = int(views_str) if views_str else 0
+
+                    # FILTRE TECHNIQUE : Si vues < min demandé, on ignore
+                    if views < min_views_needed:
+                        continue
 
                     all_videos.append({
                         "id": v.get('id'),
-                        # On utilise l'heure actuelle car YouTube Search donne des dates relatives ("2 days ago")
-                        # ce qui casserait le graphique temporel.
-                        "date_iso": datetime.utcnow().isoformat() + "Z", 
+                        "date_iso": datetime.utcnow().isoformat() + "Z",
                         "text": f"{v.get('title', '')} \n {v.get('descriptionSnippet', '')}",
                         "handle": v.get('channel', {}).get('name', 'Inconnu'),
                         "url": v.get('link', ''),
                         "source_type": "YouTube",
                         "metrics": {
-                            "likes": views, # On map les Vues vers Likes pour le calcul d'engagement
+                            "likes": views,
                             "retweets": 0,
                             "replies": 0
                         }
                     })
 
-                duration = time.time() - start_time
                 yield {
                     "current_count": len(all_videos),
                     "target": limit,
@@ -150,9 +160,8 @@ class YoutubeAPIClient:
                 try:
                     videos_search.next()
                     results = videos_search.result()
-                    time.sleep(2) 
-                except:
-                    break # Plus de résultats
+                    time.sleep(1) 
+                except: break
 
         except Exception as e:
             yield {"error": f"Erreur YouTube: {str(e)}"}
