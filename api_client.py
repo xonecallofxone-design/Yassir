@@ -1,76 +1,71 @@
 import requests
 import time
-from typing import Dict, Any, Generator
+from typing import Dict, Any, Generator, List
 from youtubesearchpython import VideosSearch
 
-# --- CONFIGURATION ET AUTHENTIFICATION ---
-API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861"
-API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
+# ================== TWITTER CONFIG ==================
+TWITTER_API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861"
+TWITTER_API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
 
-# ================== TWITTER ==================
 class TwitterAPIClient:
 
-    def build_query(self, p: Dict[str, Any]) -> str:
+    def build_query(self, params: Dict[str, Any]) -> str:
         parts = []
-        if p.get('all_words'): parts.append(p['all_words'])
-        if p.get('exact_phrase'): parts.append(f'"{p["exact_phrase"]}"')
-        if p.get('any_words'):
-            words = p['any_words'].split()
-            parts.append(f"({' OR '.join(words)})" if len(words) > 1 else p['any_words'])
-        if p.get('none_words'):
-            for w in p['none_words'].split(): parts.append(f"-{w}")
-        if p.get('hashtags'): parts.append(p['hashtags'])
-        if p.get('lang') and p['lang'] != "Tout": parts.append(f"lang:{p['lang']}")
-        if p.get('from_accounts'): parts.append(f"from:{p['from_accounts'].replace('@', '')}")
-        if p.get('since'): parts.append(f"since:{p['since']}")
-        if p.get('until'): parts.append(f"until:{p['until']}")
+        if params.get("keyword"):
+            parts.append(params["keyword"])
+        if params.get("lang") and params["lang"] != "Tout":
+            parts.append(f"lang:{params['lang']}")
         return " ".join(parts)
 
-    def fetch_tweets_generator(self, params: Dict[str, Any], limit: int = 50):
+    def fetch_tweets_generator(
+        self,
+        params: Dict[str, Any],
+        limit: int = 50
+    ) -> Generator[Dict, None, None]:
 
-        query_string = self.build_query(params)
-        headers = {"X-API-Key": API_KEY}
+        headers = {"X-API-Key": TWITTER_API_KEY}
+        query = self.build_query(params)
 
         all_tweets = []
         next_cursor = None
         start_time = time.time()
 
         while len(all_tweets) < limit:
-
-            payload = {"query": query_string, "limit": 20}
+            payload = {"query": query, "limit": 20}
             if next_cursor:
                 payload["cursor"] = next_cursor
 
-            response = requests.get(API_URL, params=payload, headers=headers)
+            response = requests.get(
+                TWITTER_API_URL,
+                params=payload,
+                headers=headers
+            )
 
             if response.status_code != 200:
+                yield {"error": "Erreur API Twitter"}
                 break
 
             data = response.json()
-            batch = data.get("tweets", [])
+            tweets = data.get("tweets", [])
 
-            if not batch:
+            if not tweets:
                 break
 
-            for t in batch:
-                if any(x["id"] == t.get("id") for x in all_tweets):
-                    continue
-
-                author = t.get("author") or {}
+            for t in tweets:
                 all_tweets.append({
-                    "platform": "twitter",
-                    "id": t.get("id"),
+                    "platform": "Twitter",
                     "date": t.get("createdAt"),
                     "text": t.get("text"),
-                    "author": author.get("userName"),
+                    "author": t.get("author", {}).get("userName"),
                     "url": t.get("url")
                 })
 
             yield {
-                "platform": "twitter",
+                "current": len(all_tweets),
                 "data": all_tweets,
-                "finished": False
+                "finished": False,
+                "duration": round(time.time() - start_time, 2)
             }
 
             next_cursor = data.get("next_cursor")
@@ -80,56 +75,29 @@ class TwitterAPIClient:
             time.sleep(6)
 
         yield {
-            "platform": "twitter",
+            "current": len(all_tweets),
             "data": all_tweets[:limit],
-            "finished": True
+            "finished": True,
+            "duration": round(time.time() - start_time, 2)
         }
 
 
-# ================== YOUTUBE ==================
-class YouTubeScraperClient:
+# ================== YOUTUBE CLIENT ==================
+class YouTubeClient:
 
-    def fetch_videos(self, query: str, limit: int = 20):
+    def fetch_videos(self, keyword: str, limit: int = 20) -> List[Dict]:
 
-        search = VideosSearch(query, limit=limit)
+        search = VideosSearch(keyword, limit=limit)
         results = search.result().get("result", [])
 
         videos = []
         for v in results:
             videos.append({
-                "platform": "youtube",
-                "title": v.get("title"),
-                "channel": v.get("channel", {}).get("name"),
-                "published": v.get("publishedTime"),
+                "platform": "YouTube",
+                "date": v.get("publishedTime"),
+                "text": v.get("title"),
+                "author": v.get("channel", {}).get("name"),
                 "url": v.get("link")
             })
 
         return videos
-
-
-# ================== MAIN ==================
-if __name__ == "__main__":
-
-    twitter = TwitterAPIClient()
-    youtube = YouTubeScraperClient()
-
-    QUERY = "bad buzz marque"
-
-    print("\n====== TWITTER ======\n")
-    tweets = []
-    for update in twitter.fetch_tweets_generator(
-        {"all_words": QUERY, "lang": "fr"},
-        limit=20
-    ):
-        if update.get("finished"):
-            tweets = update["data"]
-
-    for t in tweets:
-        print("🐦", t["text"])
-        print("   ", t["url"])
-
-    print("\n====== YOUTUBE ======\n")
-    videos = youtube.fetch_videos(QUERY, limit=10)
-    for v in videos:
-        print("▶", v["title"])
-        print("   ", v["url"])
