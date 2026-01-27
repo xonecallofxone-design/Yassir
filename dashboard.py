@@ -37,23 +37,22 @@ with st.sidebar:
 
     with st.form("api_form"):
         st.subheader("1. Critères Sémantiques")
-        all_words = st.text_input("Mots-clés", placeholder="ex: Crise Banque")
+        all_words = st.text_input("Mots-clés", placeholder="ex: Crise, Arnaque")
         exact_phrase = st.text_input("Phrase exacte")
         
-        # J'ai remis HASHTAGS visible pour tout le monde comme tu as demandé
-        hashtags = st.text_input("Hashtags", placeholder="#Maroc #Scandale")
+        # Hashtags visible pour tout le monde
+        hashtags = st.text_input("Hashtags", placeholder="#Maroc #Danger")
         
         lang = st.selectbox("Langue (Priorité)", ["Tout", "fr", "en", "ar"], index=1)
 
         st.subheader("2. Filtres Techniques")
         with st.expander("Options Avancées"):
-            # Adaptation des labels
             if source == "Twitter (X)":
                 lbl_min = "Min J'aime (Tweet)"
                 lbl_accts = "Depuis ces comptes"
             else:
                 lbl_min = "Min J'aime (Commentaire)"
-                lbl_accts = "Depuis Chaîne (Optionnel)"
+                lbl_accts = "Chaîne Spécifique (Optionnel)"
             
             c1, c2 = st.columns(2)
             since_date = c1.date_input("Début", datetime.now() - timedelta(days=30))
@@ -62,7 +61,7 @@ with st.sidebar:
             min_faves = st.number_input(lbl_min, 0, step=10)
             from_accts = st.text_input(lbl_accts)
 
-        limit = st.number_input(f"Nombre de résultats ({'Tweets' if source=='Twitter (X)' else 'Commentaires'})", 10, 2000, 50)
+        limit = st.number_input("Volume à analyser", 10, 2000, 50)
         
         submitted = st.form_submit_button(f"Lancer l'Extraction {source}")
 
@@ -80,7 +79,7 @@ with st.sidebar:
             "until": until_date.strftime("%Y-%m-%d")
         }
 
-        with st.status("Initialisation...", expanded=True) as status:
+        with st.status("Démarrage du Scan...", expanded=True) as status:
             final_data = []
             
             for progress in client.fetch_data_generator(params, limit):
@@ -94,23 +93,23 @@ with st.sidebar:
                 tgt = progress['target']
                 
                 msg_type = "Tweets" if source == "Twitter (X)" else "Commentaires"
-                status.update(label=f"Récupération des {msg_type} ({curr}/{tgt})...", state="running")
+                status.update(label=f"Collecte des {msg_type}: {curr} / {tgt}...", state="running")
                 
                 final_data = progress['data']
                 
                 if progress.get('finished'):
-                    status.update(label="Extraction terminée !", state="complete", expanded=False)
+                    status.update(label="Analyse Terminée !", state="complete", expanded=False)
 
             if final_data:
-                st.success(f"Terminé : {len(final_data)} {msg_type} archivés.")
+                st.success(f"Analyse réussie : {len(final_data)} réactions récupérées.")
                 with open("api_data.json", "w", encoding="utf-8") as f:
                     json.dump(final_data, f, ensure_ascii=False)
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.warning("Aucune donnée trouvée. Essayez d'autres mots-clés.")
+                st.warning("Aucune donnée trouvée. Essayez d'élargir la recherche.")
 
-# --- CHARGEMENT ET TRAITEMENT ---
+# --- TRAITEMENT DES DONNEES ---
 
 @st.cache_data
 def load_and_process_data():
@@ -144,17 +143,17 @@ def load_and_process_data():
 
 df_raw = load_and_process_data()
 
-st.title("War Room : Analyse de Crise (Bad Buzz)")
+st.title("War Room : Détection de Bad Buzz")
 
 if not df_raw.empty:
     source_used = df_raw['source_type'].iloc[0] if 'source_type' in df_raw.columns else "Inconnu"
-    st.caption(f"Données chargées depuis : **{source_used}**")
+    st.caption(f"Source : **{source_used}**")
 
     st.markdown("### Filtres d'Affichage")
     col_filter, _ = st.columns([1, 2])
     with col_filter:
         selected_sentiments = st.multiselect(
-            "Filtrer par sentiment :",
+            "Filtrer par tonalité :",
             options=["Positif", "Négatif", "Neutre"],
             default=["Positif", "Négatif", "Neutre"]
         )
@@ -166,11 +165,11 @@ if not df_raw.empty:
 
     st.divider()
 
-    # KPI Section
+    # KPIs
     k1, k2, k3 = st.columns(3)
     k1.metric("Volume Analysé", len(df))
     
-    eng_text = "Likes Totaux (Comms)" if "YouTube" in source_used else "Engagement Total"
+    eng_text = "Total Likes"
     k2.metric(eng_text, int(df['engagement'].sum()))
     
     if 'sentiment_cat' in df.columns:
@@ -187,7 +186,13 @@ if not df_raw.empty:
             st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
 
         st.divider()
-        st.subheader("Détail du Flux (Messages & Commentaires)")
-        st.dataframe(df[['date', 'handle', 'text', 'engagement', 'sentiment_cat']], use_container_width=True)
+        st.subheader("Flux des Réactions")
+        
+        # Choix des colonnes à afficher
+        cols_to_show = ['date', 'handle', 'text', 'engagement', 'sentiment_cat']
+        if 'context' in df.columns:
+            cols_to_show.append('context')
+            
+        st.dataframe(df[cols_to_show], use_container_width=True)
 else:
-    st.info("Configurez la recherche à gauche et cliquez sur 'Lancer l'Extraction'.")
+    st.info("Utilisez le panneau de gauche pour lancer une analyse.")
