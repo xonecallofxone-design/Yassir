@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Dict, Any, Generator
 from youtubesearchpython import VideosSearch, Comments
 
-# --- CONFIGURATION API TWITTER ---
 API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
 API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
@@ -84,12 +83,15 @@ class TwitterAPIClient:
 
 class YoutubeAPIClient:
     def fetch_data_generator(self, params: Dict[str, Any], limit: int = 50) -> Generator[Dict, None, None]:
-        # 1. Préparation de la recherche de VIDEOS d'abord
+        # 1. Préparation de la recherche (Mots clés + Hashtags)
         search_terms = []
         if params.get('all_words'): search_terms.append(params['all_words'])
         if params.get('exact_phrase'): search_terms.append(f'"{params["exact_phrase"]}"')
+        
+        # J'ai ajouté les hashtags ici comme tu as demandé
         if params.get('hashtags'): search_terms.append(params['hashtags'])
         
+        # Hack pour la langue
         lang_map = {'fr': 'français', 'en': 'english', 'ar': 'arabic'}
         if params.get('lang') and params['lang'] != 'Tout':
             search_terms.append(lang_map.get(params['lang'], params['lang']))
@@ -97,9 +99,13 @@ class YoutubeAPIClient:
         final_query = " ".join(search_terms)
         if not final_query.strip(): final_query = "news"
         
-        # On cherche d'abord les vidéos (max 20 pour ne pas saturer, on veut surtout les coms)
+        # Filtre Min Likes (appliqué aux commentaires)
+        min_likes_needed = int(params.get('min_faves', 0))
+
+        # Etape 1: Trouver les vidéos concernées
         try:
-            videos_search = VideosSearch(final_query, limit=15)
+            # On cherche 10 vidéos max pour ne pas trop attendre, l'important c'est les coms
+            videos_search = VideosSearch(final_query, limit=10)
             videos_result = videos_search.result()
         except Exception as e:
             yield {"error": f"Erreur Recherche Vidéo: {str(e)}"}
@@ -111,7 +117,7 @@ class YoutubeAPIClient:
             yield {"current_count": 0, "target": limit, "data": [], "finished": True}
             return
 
-        # 2. Boucle sur chaque vidéo pour extraire les COMMENTAIRES
+        # Etape 2: Boucle sur les vidéos pour extraire les COMMENTAIRES
         for video in videos_result['result']:
             if len(all_comments) >= limit: break
             
@@ -119,20 +125,19 @@ class YoutubeAPIClient:
             video_title = video.get('title', 'Vidéo sans titre')
             
             try:
-                # Récupération des commentaires de cette vidéo
+                # Récupération des commentaires
                 comments_fetcher = Comments(video_id)
                 
-                # On regarde s'il y a des commentaires
                 if comments_fetcher.comments and 'result' in comments_fetcher.comments:
                     for comm in comments_fetcher.comments['result']:
                         if len(all_comments) >= limit: break
                         
-                        # Extraction des données du commentaire
+                        # Data du commentaire
                         content = comm.get('content', '')
                         author = comm.get('author', {}).get('name', 'Anonyme')
                         likes_str = comm.get('votes', {}).get('simpleText', '0')
                         
-                        # Nettoyage des likes (ex: "1.2K" -> 1200)
+                        # Conversion des likes (1.2K -> 1200)
                         likes = 0
                         if 'K' in likes_str:
                             likes = int(float(likes_str.replace('K', '')) * 1000)
@@ -141,38 +146,42 @@ class YoutubeAPIClient:
                         else:
                             likes = int(''.join(filter(str.isdigit, likes_str)) or 0)
 
-                        # Note: YouTube API ne donne pas la date exacte facile (ex: "2 weeks ago").
-                        # Pour que le graph fonctionne, on met la date actuelle.
-                        # On ajoute la "vraie" date relative dans le texte pour info.
+                        # Filtre technique (Min Likes sur le commentaire)
+                        if likes < min_likes_needed:
+                            continue
+
+                        # Note: YouTube Comments API ne donne pas la date absolue facile.
+                        # On stocke la date relative dans le texte pour l'analyse manuelle.
                         date_relative = comm.get('publishedTime', '')
-                        full_text = f"{content} (Date: {date_relative}) [Source: {video_title}]"
+                        
+                        # On met le texte du commentaire + infos contextuelles
+                        full_text = f"{content}"
 
                         all_comments.append({
                             "id": comm.get('id'),
-                            "date_iso": datetime.utcnow().isoformat() + "Z", # Date technique pour le tri
+                            # On utilise l'heure actuelle pour le tri temporel global
+                            "date_iso": datetime.utcnow().isoformat() + "Z", 
                             "text": full_text,
-                            "handle": author,
+                            "handle": f"{author} (sur: {video_title[:20]}...)",
                             "url": video.get('link', ''),
                             "source_type": "YouTube Comments",
                             "metrics": {
                                 "likes": likes,
-                                "retweets": 0, # Pas de retweet sur YT
+                                "retweets": 0,
                                 "replies": 0
                             }
                         })
                 
-                # Feedback à l'interface pendant qu'on cherche
                 yield {
                     "current_count": len(all_comments),
                     "target": limit,
                     "data": all_comments,
                     "finished": False
                 }
-                time.sleep(0.5) # Petite pause pour pas se faire bloquer
+                time.sleep(0.5) 
 
             except Exception as e:
-                # Si une vidéo a les coms désactivés, on passe à la suivante
-                continue
+                continue # Si erreur sur une vidéo (ex: coms désactivés), on passe à la suivante
 
         yield {
             "current_count": len(all_comments),

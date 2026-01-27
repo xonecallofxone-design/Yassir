@@ -40,21 +40,21 @@ with st.sidebar:
         all_words = st.text_input("Mots-clés", placeholder="ex: Crise Banque")
         exact_phrase = st.text_input("Phrase exacte")
         
-        # Logique d'affichage selon la source
-        if source == "Twitter (X)":
-            hashtags = st.text_input("Hashtags", placeholder="#Finance")
-            lang = st.selectbox("Langue", ["Tout", "fr", "en", "ar"], index=1)
-            lbl_min = "Min J'aime"
-            lbl_accts = "Depuis ces comptes"
-        else:
-            st.info("YouTube : Analyse des COMMENTAIRES sous les vidéos trouvées.")
-            hashtags = ""
-            lang = st.selectbox("Langue des vidéos", ["Tout", "fr", "en", "ar"], index=1)
-            lbl_min = "Min Likes (Commentaire)"
-            lbl_accts = "Chaîne spécifique (Optionnel)"
+        # J'ai remis HASHTAGS visible pour tout le monde comme tu as demandé
+        hashtags = st.text_input("Hashtags", placeholder="#Maroc #Scandale")
+        
+        lang = st.selectbox("Langue (Priorité)", ["Tout", "fr", "en", "ar"], index=1)
 
         st.subheader("2. Filtres Techniques")
         with st.expander("Options Avancées"):
+            # Adaptation des labels
+            if source == "Twitter (X)":
+                lbl_min = "Min J'aime (Tweet)"
+                lbl_accts = "Depuis ces comptes"
+            else:
+                lbl_min = "Min J'aime (Commentaire)"
+                lbl_accts = "Depuis Chaîne (Optionnel)"
+            
             c1, c2 = st.columns(2)
             since_date = c1.date_input("Début", datetime.now() - timedelta(days=30))
             until_date = c2.date_input("Fin", datetime.now())
@@ -62,7 +62,7 @@ with st.sidebar:
             min_faves = st.number_input(lbl_min, 0, step=10)
             from_accts = st.text_input(lbl_accts)
 
-        limit = st.number_input("Nombre de résultats (Commentaires)", 10, 2000, 50)
+        limit = st.number_input(f"Nombre de résultats ({'Tweets' if source=='Twitter (X)' else 'Commentaires'})", 10, 2000, 50)
         
         submitted = st.form_submit_button(f"Lancer l'Extraction {source}")
 
@@ -93,9 +93,8 @@ with st.sidebar:
                 curr = progress['current_count']
                 tgt = progress['target']
                 
-                # Message adapté
-                type_msg = "Tweets" if source == "Twitter (X)" else "Commentaires"
-                status.update(label=f"Récupération de {curr}/{tgt} {type_msg}...", state="running")
+                msg_type = "Tweets" if source == "Twitter (X)" else "Commentaires"
+                status.update(label=f"Récupération des {msg_type} ({curr}/{tgt})...", state="running")
                 
                 final_data = progress['data']
                 
@@ -103,13 +102,13 @@ with st.sidebar:
                     status.update(label="Extraction terminée !", state="complete", expanded=False)
 
             if final_data:
-                st.success(f"Terminé : {len(final_data)} éléments archivés via {source}.")
+                st.success(f"Terminé : {len(final_data)} {msg_type} archivés.")
                 with open("api_data.json", "w", encoding="utf-8") as f:
                     json.dump(final_data, f, ensure_ascii=False)
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.warning("Aucune donnée trouvée.")
+                st.warning("Aucune donnée trouvée. Essayez d'autres mots-clés.")
 
 # --- CHARGEMENT ET TRAITEMENT ---
 
@@ -145,7 +144,7 @@ def load_and_process_data():
 
 df_raw = load_and_process_data()
 
-st.title("War Room : Analyse de Crise")
+st.title("War Room : Analyse de Crise (Bad Buzz)")
 
 if not df_raw.empty:
     source_used = df_raw['source_type'].iloc[0] if 'source_type' in df_raw.columns else "Inconnu"
@@ -167,20 +166,20 @@ if not df_raw.empty:
 
     st.divider()
 
+    # KPI Section
     k1, k2, k3 = st.columns(3)
-    k1.metric("Volume Affiché", len(df))
+    k1.metric("Volume Analysé", len(df))
     
-    # Label dynamique
-    eng_label = "Total Likes (Comms)" if "YouTube" in source_used else "Engagement Total"
-    k2.metric(eng_label, int(df['engagement'].sum()))
+    eng_text = "Likes Totaux (Comms)" if "YouTube" in source_used else "Engagement Total"
+    k2.metric(eng_text, int(df['engagement'].sum()))
     
     if 'sentiment_cat' in df.columns:
         neg_count = len(df[df['sentiment_cat'] == 'Négatif'])
-        k3.metric("Contenus Négatifs", neg_count, delta_color="inverse")
+        k3.metric("Messages Négatifs (Alert)", neg_count, delta_color="inverse")
 
         c1, c2 = st.columns([1, 2])
         with c1:
-            st.subheader("Répartition")
+            st.subheader("Répartition des Avis")
             st.plotly_chart(px.pie(df, names='sentiment_cat', color='sentiment_cat', color_discrete_map=COLOR_MAP), use_container_width=True)
 
         with c2:
@@ -188,7 +187,7 @@ if not df_raw.empty:
             st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
 
         st.divider()
-        st.subheader("Détail du Flux")
+        st.subheader("Détail du Flux (Messages & Commentaires)")
         st.dataframe(df[['date', 'handle', 'text', 'engagement', 'sentiment_cat']], use_container_width=True)
 else:
     st.info("Configurez la recherche à gauche et cliquez sur 'Lancer l'Extraction'.")
