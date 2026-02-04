@@ -4,7 +4,7 @@ from typing import Dict, Any, Generator
 
 # --- CONFIGURATION ET AUTHENTIFICATION ---
 # Clé API fournie (Free Tier)
-API_KEY = "new1_c4a4317b0a7f4669b7a0baf181eb4861" 
+API_KEY = "new1_d909e395d3e6459e934c3bc3c004449e" 
 API_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 
 class TwitterAPIClient:
@@ -142,4 +142,5 @@ class TwitterAPIClient:
             "data": all_tweets[:limit], # Coupe exacte
             "duration": round(duration, 2),
             "finished": True
+
         } 
