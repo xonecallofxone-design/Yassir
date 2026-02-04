@@ -1,8 +1,10 @@
 import sys
 import asyncio
 
+# --- CORRECTIF WINDOWS ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+# -------------------------
 
 import streamlit as st
 import pandas as pd
@@ -12,16 +14,20 @@ import os
 import nest_asyncio
 from textblob import TextBlob 
 from datetime import datetime, timedelta
-from api_client import TwitterAPIClient, YoutubeAPIClient
+
+# Importation du client API
+from api_client import TwitterAPIClient
 
 nest_asyncio.apply()
 
-st.set_page_config(page_title="Système d'Analyse Bad Buzz", layout="wide")
+# Configuration de la page
+st.set_page_config(page_title="Système d'Analyse Avancé", layout="wide")
 
+# CSS Professionnel
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #C2185B; color: white; border: none; font-weight: bold; }
-    .stButton>button:hover { background-color: #880E4F; color: white; }
+    .stButton>button { width: 100%; background-color: #1DA1F2; color: white; border: none; font-weight: bold; }
+    .stButton>button:hover { background-color: #0d8ddb; color: white; }
     .metric-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
@@ -30,47 +36,31 @@ COLOR_MAP = {'Positif': '#00CC96', 'Négatif': '#EF553B', 'Neutre': '#7f7f7f'}
 
 # --- BARRE LATERALE ---
 with st.sidebar:
-    st.header("Paramètres de Scan")
+    st.header("Configuration de Recherche")
     
-    source = st.radio("Cible", ["Twitter (X)", "YouTube"], index=0)
-    st.divider()
-
     with st.form("api_form"):
-        st.subheader("1. Mots-clés (Sujet)")
-        all_words = st.text_input("Mots-clés Principaux", placeholder="ex: Boycott, Scandale")
+        st.subheader("1. Critères Sémantiques")
+        all_words = st.text_input("Mots-clés", placeholder="ex: Crise Banque")
         exact_phrase = st.text_input("Phrase exacte")
-        
-        # Hashtags dispo pour les deux
-        hashtags = st.text_input("Hashtags", placeholder="#Maroc #Danger")
-        
+        hashtags = st.text_input("Hashtags", placeholder="#Finance")
         lang = st.selectbox("Langue", ["Tout", "fr", "en", "ar"], index=1)
 
         st.subheader("2. Filtres Techniques")
         with st.expander("Options Avancées"):
-            if source == "Twitter (X)":
-                lbl_min = "Min Likes (Tweet)"
-                lbl_accts = "Comptes Ciblés"
-            else:
-                lbl_min = "Min Likes (Commentaire)"
-                lbl_accts = "Chaîne Spécifique (Optionnel)"
-            
+            st.info("Astuce : Élargissez les dates pour plus de résultats.")
             c1, c2 = st.columns(2)
             since_date = c1.date_input("Début", datetime.now() - timedelta(days=30))
             until_date = c2.date_input("Fin", datetime.now())
-            
-            min_faves = st.number_input(lbl_min, 0, step=10)
-            from_accts = st.text_input(lbl_accts)
+            min_faves = st.number_input("Min J'aime", 0)
+            from_accts = st.text_input("Depuis ces comptes")
 
-        limit = st.number_input("Volume à analyser", 10, 2000, 50)
+        limit = st.number_input("Nombre de tweets", 10, 2000, 50)
         
-        submitted = st.form_submit_button(f"Lancer l'Analyse {source}")
+        submitted = st.form_submit_button("Lancer l'Extraction API")
 
     if submitted:
-        if source == "Twitter (X)":
-            client = TwitterAPIClient()
-        else:
-            client = YoutubeAPIClient()
-            
+        client = TwitterAPIClient()
+        
         params = {
             "all_words": all_words, "exact_phrase": exact_phrase,
             "hashtags": hashtags, "lang": lang,
@@ -79,35 +69,35 @@ with st.sidebar:
             "until": until_date.strftime("%Y-%m-%d")
         }
 
-        with st.status("Traitement en cours...", expanded=True) as status:
+        # --- MISE À JOUR DYNAMIQUE ---
+        with st.status("Initialisation...", expanded=True) as status:
             final_data = []
             
-            for progress in client.fetch_data_generator(params, limit):
+            for progress in client.fetch_tweets_generator(params, limit):
                 
                 if "error" in progress:
-                    status.update(label="Erreur détectée", state="error")
+                    status.update(label="Erreur survenue", state="error")
                     st.error(progress["error"])
                     break
                 
                 curr = progress['current_count']
                 tgt = progress['target']
                 
-                msg_type = "Tweets" if source == "Twitter (X)" else "Commentaires"
-                status.update(label=f"Collecte des {msg_type}: {curr}/{tgt}...", state="running")
+                status.update(label=f"Traitement en cours ({curr}/{tgt}) - Veuillez patienter...", state="running")
                 
                 final_data = progress['data']
                 
                 if progress.get('finished'):
-                    status.update(label="Analyse Terminée !", state="complete", expanded=False)
+                    status.update(label="Extraction terminée !", state="complete", expanded=False)
 
             if final_data:
-                st.success(f"Terminé : {len(final_data)} réactions collectées.")
+                st.success(f"Terminé : {len(final_data)} tweets archivés.")
                 with open("api_data.json", "w", encoding="utf-8") as f:
                     json.dump(final_data, f, ensure_ascii=False)
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.warning("Aucune donnée trouvée. Vérifiez vos mots-clés.")
+                st.warning("Aucune donnée trouvée.")
 
 # --- CHARGEMENT ET TRAITEMENT ---
 
@@ -143,13 +133,14 @@ def load_and_process_data():
 
 df_raw = load_and_process_data()
 
-st.title("War Room : Détection de Bad Buzz")
+# --- TABLEAU DE BORD ---
+
+st.title("War Room : Analyse de Crise")
 
 if not df_raw.empty:
-    source_used = df_raw['source_type'].iloc[0] if 'source_type' in df_raw.columns else "Inconnu"
-    st.caption(f"Source des données : **{source_used}**")
-
-    # Filtres interactifs
+    
+    # 1. Filtre Post-Extraction
+    st.markdown("### Filtres d'Affichage")
     col_filter, _ = st.columns([1, 2])
     with col_filter:
         selected_sentiments = st.multiselect(
@@ -165,35 +156,95 @@ if not df_raw.empty:
 
     st.divider()
 
-    # Section KPIs
+    # 2. KPIs
     k1, k2, k3 = st.columns(3)
-    k1.metric("Volume Analysé", len(df))
-    
-    # Label dynamique
-    eng_text = "Somme des Likes"
-    k2.metric(eng_text, int(df['engagement'].sum()))
+    k1.metric("Volume Affiché", len(df))
+    k2.metric("Engagement Total", int(df['engagement'].sum()))
     
     if 'sentiment_cat' in df.columns:
         neg_count = len(df[df['sentiment_cat'] == 'Négatif'])
-        k3.metric("Réactions Négatives", neg_count, delta_color="inverse")
+        k3.metric("Tweets Négatifs", neg_count, delta_color="inverse")
 
+        # 3. Graphiques
         c1, c2 = st.columns([1, 2])
+        
         with c1:
-            st.subheader("Répartition des Avis")
-            st.plotly_chart(px.pie(df, names='sentiment_cat', color='sentiment_cat', color_discrete_map=COLOR_MAP), use_container_width=True)
+            st.subheader("Répartition")
+            if not df.empty:
+                st.plotly_chart(
+                    px.pie(df, names='sentiment_cat', color='sentiment_cat', color_discrete_map=COLOR_MAP), 
+                    use_container_width=True
+                )
 
         with c2:
             st.subheader("Impact vs Sentiment")
-            st.plotly_chart(px.scatter(df, x="engagement", y="sentiment_score", color="sentiment_cat", color_discrete_map=COLOR_MAP, hover_data=['text', 'handle'], size_max=40), use_container_width=True)
+            if not df.empty:
+                st.plotly_chart(
+                    px.scatter(df, x="engagement", y="sentiment_score", 
+                               color="sentiment_cat", color_discrete_map=COLOR_MAP, 
+                               hover_data=['text', 'handle'], size_max=40), 
+                    use_container_width=True
+                )
 
         st.divider()
-        st.subheader("Flux des Messages (Raw Feed)")
         
-        # Colonnes intelligentes
-        display_cols = ['date', 'handle', 'text', 'engagement', 'sentiment_cat']
-        if 'context' in df.columns:
-            display_cols.append('context')
+        # --- 4. SOLDE NET (POS - NEG) PAR 4 HEURES ---
+        st.subheader("Solde Net de Sentiment (Périodicité : 4 Heures)")
+        
+        if 'date' in df.columns and not df.empty:
+            # A. Filtrage: On exclut les Neutres
+            df_polar = df[df['sentiment_cat'] != 'Neutre'].copy()
             
-        st.dataframe(df[display_cols], use_container_width=True)
+            if not df_polar.empty:
+                # B. Groupement par 4H et pivot des données pour calcul
+                # On compte le nombre de Positif et Négatif pour chaque créneau
+                df_agg = df_polar.groupby([pd.Grouper(key='date', freq='4H'), 'sentiment_cat']).size().unstack(fill_value=0)
+                
+                # Sécurisation des colonnes si l'une manque (ex: que des négatifs)
+                if 'Positif' not in df_agg.columns: df_agg['Positif'] = 0
+                if 'Négatif' not in df_agg.columns: df_agg['Négatif'] = 0
+                
+                # C. Calcul du Solde Net (Net Score)
+                # Formule : Net = Positif - Négatif
+                df_agg['net_score'] = df_agg['Positif'] - df_agg['Négatif']
+                
+                # D. Détermination de la couleur (Vert si >0, Rouge si <0)
+                df_agg['color_label'] = df_agg['net_score'].apply(lambda x: 'Positif' if x >= 0 else 'Négatif')
+                
+                # Reset index pour Plotly
+                df_final = df_agg.reset_index()
+
+                # E. Création du Graphique (Solde Net)
+                fig_bar = px.bar(
+                    df_final, 
+                    x="date", 
+                    y="net_score", 
+                    color="color_label", # La couleur dépend du résultat du calcul
+                    color_discrete_map=COLOR_MAP,
+                    title="Solde = [Tweets Positifs] - [Tweets Négatifs]",
+                    labels={"date": "Tranches de 4h", "net_score": "Solde Net (Pos - Neg)"}
+                )
+                
+                # F. Mise en page
+                fig_bar.add_hline(y=0, line_color="white", opacity=0.8)
+                fig_bar.update_layout(
+                    yaxis_title="Solde Net",
+                    bargap=0.1,
+                    showlegend=False # Pas besoin de légende car explicite
+                )
+                
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Pas assez de données polarisées pour calculer le solde.")
+
+        # 5. Données
+        st.subheader("Détail du Flux")
+        st.dataframe(
+            df[['date', 'handle', 'text', 'engagement', 'sentiment_cat']], 
+            use_container_width=True
+        )
+    else:
+        st.info("Données textuelles non disponibles pour l'analyse.")
+
 else:
-    st.info("Utilisez le menu à gauche pour configurer et lancer l'analyse.")
+    st.info("Configurez la recherche à gauche et cliquez sur 'Lancer l'Extraction'.")
